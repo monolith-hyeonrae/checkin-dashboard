@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OCR 체크인 실시간 대시보드</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    img.smooth-replace {
+      transition: opacity 0.5s ease-in-out;
+      display: block;
+    }
+    img.smooth-replace.fadeout {
+      opacity: 0.4;
+    }
+    .tag {
+      display: inline-block;
+      padding: 0.1rem 0.4rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border-radius: 0.25rem;
+      margin-right: 0.25rem;
+    }
+    .tag-on {
+      background-color: #10b981;
+      color: white;
+    }
+    .tag-off {
+      background-color: #e5e7eb;
+      color: #6b7280;
+    }
+    .car-timeline span {
+      display: inline-block;
+      min-width: 2.5rem;
+      text-align: center;
+      padding: 0.1rem 0.2rem;
+    }
+    .car-timeline span:not(:last-child) {
+      opacity: 0.4;
+    }
+    .car-timeline span:last-child {
+      font-weight: bold;
+      opacity: 1;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 p-4">
+  <h1 class="text-xl font-bold text-center mb-4">🚘 OCR 체크인 실시간 대시보드</h1>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3" id="dashboard-grid">
+    <!-- 카드 동적 삽입 -->
+  </div>
+
+  <script>
+    const devices = {{ devices | tojson }};
+    const grid = document.getElementById('dashboard-grid');
+    const cardMap = new Map();
+    const carHistory = new Map();
+
+    function fetchWithTimeout(resource, options = {}) {
+      const { timeout = 1000 } = options;
+      return Promise.race([
+        fetch(resource),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), timeout))
+      ]);
+    }
+
+    async function fetchDeviceStatus(ip) {
+      try {
+        const [statusRes, logsRes] = await Promise.all([
+          fetchWithTimeout(`http://${ip}:9810/api/status`),
+          fetchWithTimeout(`http://${ip}:9810/api/send_logs`)
+        ]);
+        const status = await statusRes.json();
+        const logs = await logsRes.json();
+        return { ip, status, logs, online: true };
+      } catch (e) {
+        return { ip, online: false };
+      }
+    }
+
+    function preloadImage(url, onload) {
+      const img = new Image();
+      img.onload = () => onload(url);
+      img.src = url;
+    }
+
+    function renderCarTimeline(ip, current) {
+      const prev = carHistory.get(ip) || [];
+      if (prev[prev.length - 1] !== current && current !== '-') {
+        prev.push(current);
+        if (prev.length > 5) prev.shift();
+        carHistory.set(ip, prev);
+      }
+      return prev.map(c => `<span>${c}</span>`).join('');
+    }
+
+    function updateDeviceCard(data) {
+      const { ip, status, logs, online } = data;
+
+      let card = cardMap.get(ip);
+      if (!card) {
+        card = document.createElement('div');
+        card.className = "bg-white rounded-md shadow border text-center text-sm overflow-hidden";
+        grid.appendChild(card);
+        cardMap.set(ip, card);
+      }
+
+      const header = `<div class="text-xs px-2 py-1 font-semibold ${online ? 'bg-gray-800 text-white' : 'bg-red-100 text-red-700'}">
+        ${ip} ${online ? '' : '❌'}
+      </div>`;
+
+      if (!online) {
+        card.innerHTML = header + `<div class="p-3 text-gray-400 italic text-xs">연결되지 않음</div>`;
+        return;
+      }
+
+      const lastLog = logs && logs.length > 0 ? logs[0] : null;
+      const carNumber = lastLog?.carNumber || "-";
+
+      const thumbUrl = `http://${ip}:9810${status.thumbnailUrl}?ts=${Date.now()}`;
+      const videoSizeClass = "aspect-[16/9]";
+
+      const cameraTag = status.vstream_status === 'active' ? 'tag tag-on' : 'tag tag-off';
+      const ocrTag = status.ocr_status === 'active' ? 'tag tag-on' : 'tag tag-off';
+
+      if (!card.querySelector('img')) {
+        card.innerHTML = `
+          ${header}
+          <a href="#" onclick="openDashboardPopup('${ip}')">
+            <img src="${thumbUrl}" class="w-full ${videoSizeClass} object-cover smooth-replace" alt="thumbnail">
+          </a>
+          <div class="mt-1 text-xs">
+            <span class="${cameraTag}">카메라 연결</span>
+            <span class="${ocrTag}">체크인 동작중</span>
+          </div>
+          <div class="text-lg text-gray-800 mt-2 car-timeline">${renderCarTimeline(ip, carNumber)}</div>
+        `;
+      } else {
+        const img = card.querySelector('img');
+        preloadImage(thumbUrl, (newSrc) => {
+          img.classList.add('fadeout');
+          setTimeout(() => {
+            img.src = newSrc;
+            img.classList.remove('fadeout');
+          }, 100);
+        });
+        const timelineEl = card.querySelector('.car-timeline');
+        if (timelineEl) timelineEl.innerHTML = renderCarTimeline(ip, carNumber);
+
+        const tags = card.querySelectorAll(".tag");
+        if (tags.length === 2) {
+          tags[0].className = status.vstream_status === 'active' ? 'tag tag-on' : 'tag tag-off';
+          tags[1].className = status.ocr_status === 'active' ? 'tag tag-on' : 'tag tag-off';
+        }
+      }
+    }
+
+    async function updateAllDevices() {
+      const updates = await Promise.all(devices.map(fetchDeviceStatus));
+      updates.forEach(updateDeviceCard);
+    }
+
+    function openDashboardPopup(ip) {
+      window.open(`http://${ip}:9810`, '_blank', 'width=1024,height=768,scrollbars=yes,resizable=yes');
+    }
+
+    updateAllDevices();
+    setInterval(updateAllDevices, 2000);
+  </script>
+</body>
+</html>

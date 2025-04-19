@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Camera Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 text-gray-800">
+  <div class="max-w-2xl mx-auto px-4 py-4 space-y-4">
+
+    <!-- 🎥 영상 or 경고 -->
+    <div id="video-section" class="rounded-lg overflow-hidden shadow-md border">
+      <img id="video-feed" src="{{ url_for('video_feed') }}" alt="camera stream" class="w-full hidden">
+      <div id="video-warning" class="p-4 bg-yellow-100 text-yellow-800 text-sm hidden">
+        🚫 <strong>영상 사용 중단:</strong>  현재 다른 탭에서 카메라를 사용하고 있어 이 페이지에서는 표시되지 않습니다.
+        <br/>모든 탭을 닫은 후 다시 시도해 주세요.
+      </div>
+    </div>
+
+    <!-- 📡 상태 정보 -->
+    <div class="bg-white p-4 rounded-lg shadow-md text-sm space-y-2">
+      <div><span class="font-semibold">📸 /dev/video0:</span> {{ '✅ 연결됨' if device_status else '❌ 없음' }}</div>
+      <div><span class="font-semibold">📡 vstream 서비스:</span> {{ vstream_status }}</div>
+      <div><span class="font-semibold">🧠 ocr-checkin 서비스:</span> {{ ocr_status }}</div>
+    </div>
+
+    <!-- 📝 실시간 SEND 로그 -->
+    <div class="bg-white p-4 rounded-lg shadow-md text-sm">
+      <div class="font-semibold mb-2">🚗 최근 차량 전송 로그 (실시간)</div>
+      <div id="send-log-container" class="space-y-2 text-sm">
+        <div class="text-gray-400 italic">로딩 중...</div>
+      </div>
+    </div>
+
+    <!-- ⚙️ Configuration 수정 토글 -->
+    <div class="bg-white p-4 rounded-lg shadow-md">
+      <button
+        onclick="toggleConfigPanel()"
+        class="w-full bg-gray-800 text-white font-semibold py-2 rounded hover:bg-gray-700 transition"
+      >
+        ⚙️ 설정 수정 열기 / 닫기
+      </button>
+
+      <!-- 접힌 설정 패널 -->
+      <div id="config-panel" class="mt-4 hidden">
+        <form method="POST" action="{{ url_for('update') }}" class="space-y-3 text-sm">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 font-mono">
+            <div>
+              <label class="block font-semibold">SOURCE_DEGREE</label>
+              <input type="text" name="source_degree" value="{{ config.PREPROC.SOURCE_DEGREE }}" class="w-full border rounded px-2 py-1" />
+            </div>
+            <div>
+              <label class="block font-semibold">CONFIDENCE</label>
+              <input type="text" name="confidence" value="{{ config.THRESHOLD.CONFIDENCE }}" class="w-full border rounded px-2 py-1" />
+            </div>
+            <div class="sm:col-span-2">
+              <label class="block font-semibold">ROI</label>
+              <input type="text" name="roi" value="{{ config.THRESHOLD.ROI }}" class="w-full border rounded px-2 py-1" />
+            </div>
+            <div>
+              <label class="block font-semibold">WIDTH</label>
+              <input type="text" name="thresh_width" value="{{ config.THRESHOLD.WIDTH }}" class="w-full border rounded px-2 py-1" />
+            </div>
+            <div>
+              <label class="block font-semibold">HEIGHT</label>
+              <input type="text" name="thresh_height" value="{{ config.THRESHOLD.HEIGHT }}" class="w-full border rounded px-2 py-1" />
+            </div>
+          </div>
+          <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 rounded hover:bg-blue-700 transition">
+            💾 저장
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ✅ 카메라 중복 접근 방지 -->
+  <script>
+    const STORAGE_KEY = 'camera_page_lock';
+    const timestamp = Date.now();
+    const video = document.getElementById('video-feed');
+    const warning = document.getElementById('video-warning');
+
+    function canAccessCamera() {
+      const lock = localStorage.getItem(STORAGE_KEY);
+      if (!lock || (timestamp - parseInt(lock)) > 10000) {
+        localStorage.setItem(STORAGE_KEY, timestamp);
+        return true;
+      }
+      return false;
+    }
+
+    function releaseCameraLock() {
+      const current = localStorage.getItem(STORAGE_KEY);
+      if (current && parseInt(current) === timestamp) {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+
+    const allowed = canAccessCamera();
+    if (allowed) {
+      video.classList.remove('hidden');
+    } else {
+      warning.classList.remove('hidden');
+    }
+
+    window.addEventListener('beforeunload', releaseCameraLock);
+  </script>
+
+  <!-- 🔁 실시간 SEND 로그 업데이트 -->
+  <script>
+    let lastSeenDeviceDts = new Set();
+
+    async function fetchSendLogs() {
+      try {
+        const res = await fetch('/api/send_logs');
+        const data = await res.json();
+
+        const container = document.getElementById('send-log-container');
+        container.innerHTML = '';
+
+        if (data.length === 0) {
+          container.innerHTML = '<div class="text-gray-500 italic">최근 SEND 로그 없음</div>';
+          return;
+        }
+
+        data.forEach((log, index) => {
+          const isNew = !lastSeenDeviceDts.has(log.deviceDt) && index === 0;
+          lastSeenDeviceDts.add(log.deviceDt);
+
+          const el = document.createElement('div');
+          el.className = `
+            border rounded-lg px-3 py-2 transition
+            ${isNew ? 'bg-green-200 animate-pulse border-green-400' : 'bg-white border-gray-300'}
+          `;
+          el.innerHTML = `
+            <div><span class="font-semibold">📅 시간:</span> ${log.deviceDt}</div>
+            <div><span class="font-semibold">🚘 차량번호:</span> ${log.carNumber}</div>
+            <div><span class="font-semibold">🛤️ 트랙ID:</span> ${log.trackId}</div>
+          `;
+          container.appendChild(el);
+        });
+
+        lastSeenDeviceDts = new Set(data.map(log => log.deviceDt));
+      } catch (e) {
+        console.error('SEND 로그 갱신 실패:', e);
+      }
+    }
+
+    setInterval(fetchSendLogs, 5000);
+    window.addEventListener('DOMContentLoaded', fetchSendLogs);
+  </script>
+
+  <!-- ⚙️ 설정 접기 토글 -->
+  <script>
+    function toggleConfigPanel() {
+      const panel = document.getElementById('config-panel');
+      panel.classList.toggle('hidden');
+    }
+  </script>
+</body>
+</html>
